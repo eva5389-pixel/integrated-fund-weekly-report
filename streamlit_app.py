@@ -1,0 +1,225 @@
+from __future__ import annotations
+
+from datetime import date
+from pathlib import Path
+
+import pandas as pd
+import streamlit as st
+
+from utils.analysis import (
+    INDUSTRY_COLUMNS,
+    MARKET_COLUMNS,
+    build_markdown_report,
+    classify_alignment,
+    normalize_industry_data,
+    normalize_market_data,
+)
+
+
+ROOT = Path(__file__).parent
+DATA_DIR = ROOT / "data"
+
+DEFAULT_WEEKLY_URL = "https://global-index-weekly-uc3hzgjlbdrzsnkqe8ybar.streamlit.app/"
+DEFAULT_FUND_URL = "https://fund-analysis-report-generator-caafenpfzpxbybgeldumwp.streamlit.app/"
+DEFAULT_INDUSTRY_URL = "https://semiconductor-memory-inventory-dashboard-kne2d52og26vgaeohcvkc.streamlit.app/"
+
+
+st.set_page_config(
+    page_title="基金與產業一週整合報告",
+    page_icon=":material/finance_mode:",
+    layout="wide",
+)
+
+
+@st.cache_data
+def load_example(name: str) -> pd.DataFrame:
+    return pd.read_csv(DATA_DIR / name)
+
+
+def read_upload(upload, fallback_name: str) -> pd.DataFrame:
+    if upload is None:
+        return load_example(fallback_name).copy()
+    return pd.read_csv(upload)
+
+
+if "report_ready" not in st.session_state:
+    st.session_state.report_ready = False
+
+st.title("基金與產業一週整合報告")
+st.caption(
+    "把基金績效、全球市場週報與半導體／記憶體產業變化放在同一份報告中。"
+    "資料不足時明確標示，不自行推測。"
+)
+
+with st.container(horizontal=True):
+    st.link_button("全球市場週報", DEFAULT_WEEKLY_URL, icon=":material/public:")
+    st.link_button("原基金分析工具", DEFAULT_FUND_URL, icon=":material/monitoring:")
+    st.link_button("科技供應鏈儀表板", DEFAULT_INDUSTRY_URL, icon=":material/memory:")
+
+with st.form("report_inputs", border=True):
+    st.subheader("報告設定")
+    fund_url = st.text_input(
+        "基金網址",
+        placeholder="貼上 MoneyDJ、Yahoo 或其他基金頁面網址",
+        help="網址會列入報告來源。基金數值請由下方欄位或上傳檔案提供。",
+    )
+    with st.container(horizontal=True):
+        fund_name = st.text_input("基金名稱", value="示範半導體基金")
+        benchmark = st.text_input("Benchmark", value="費城半導體指數")
+        report_date = st.date_input("報告日期", value=date.today())
+
+    st.markdown("**基金指標**")
+    with st.container(horizontal=True):
+        fund_week = st.number_input("基金本週報酬 %", value=2.4, step=0.1)
+        fund_month = st.number_input("基金近一月報酬 %", value=6.8, step=0.1)
+        benchmark_week = st.number_input("Benchmark 本週報酬 %", value=3.7, step=0.1)
+        sharpe = st.number_input("Sharpe", value=1.25, step=0.05)
+        beta = st.number_input("Beta", value=1.08, step=0.05)
+        max_drawdown = st.number_input("最大回撤 %", value=-14.2, step=0.1)
+
+    st.markdown("**資料檔案（選填）**")
+    with st.container(horizontal=True):
+        market_upload = st.file_uploader(
+            "市場週資料 CSV",
+            type=["csv"],
+            help="欄位：市場、指數、本週漲跌%、近1月%、趨勢、資料日期",
+        )
+        industry_upload = st.file_uploader(
+            "產業週資料 CSV",
+            type=["csv"],
+            help="欄位：產業、指標、本週變化%、近1月變化%、趨勢、資料日期",
+        )
+
+    submitted = st.form_submit_button(
+        "產生整合報告", type="primary", icon=":material/description:"
+    )
+
+if submitted:
+    try:
+        market_df = normalize_market_data(read_upload(market_upload, "market_weekly.csv"))
+        industry_df = normalize_industry_data(
+            read_upload(industry_upload, "industry_weekly.csv")
+        )
+        st.session_state.market_df = market_df
+        st.session_state.industry_df = industry_df
+        st.session_state.inputs = {
+            "fund_url": fund_url,
+            "fund_name": fund_name,
+            "benchmark": benchmark,
+            "report_date": report_date.isoformat(),
+            "fund_week": float(fund_week),
+            "fund_month": float(fund_month),
+            "benchmark_week": float(benchmark_week),
+            "sharpe": float(sharpe),
+            "beta": float(beta),
+            "max_drawdown": float(max_drawdown),
+        }
+        st.session_state.report_ready = True
+    except (ValueError, pd.errors.ParserError) as exc:
+        st.error(f"資料格式無法讀取：{exc}")
+
+if not st.session_state.report_ready:
+    st.info("填寫基金資料後按「產生整合報告」。目前附有示範市場與產業資料。")
+    st.stop()
+
+inputs = st.session_state.inputs
+market_df = st.session_state.market_df
+industry_df = st.session_state.industry_df
+excess_return = inputs["fund_week"] - inputs["benchmark_week"]
+alignment = classify_alignment(
+    fund_week=inputs["fund_week"],
+    benchmark_week=inputs["benchmark_week"],
+    industry_week=float(industry_df["本週變化%"].mean()),
+    sharpe=inputs["sharpe"],
+)
+
+st.divider()
+st.subheader(f"{inputs['fund_name']} 一週摘要")
+with st.container(horizontal=True):
+    st.metric("基金本週", f"{inputs['fund_week']:.2f}%", border=True)
+    st.metric("Benchmark", f"{inputs['benchmark_week']:.2f}%", border=True)
+    st.metric("超額報酬", f"{excess_return:+.2f}%", border=True)
+    st.metric("Sharpe", f"{inputs['sharpe']:.2f}", border=True)
+    st.metric("綜合判讀", alignment, border=True)
+
+overview, market_tab, industry_tab, report_tab = st.tabs(
+    ["整合摘要", "市場一週", "相關產業", "報告下載"]
+)
+
+with overview:
+    with st.container(border=True):
+        st.markdown("**判讀原則**")
+        st.write(
+            "同時比較基金、Benchmark 與相關產業方向；基金落後 Benchmark、產業轉弱或風險指標偏高時，"
+            "結論會下調。這是研究分級，不是保證報酬的買賣指令。"
+        )
+    st.dataframe(
+        industry_df.sort_values("本週變化%", ascending=False).head(5),
+        hide_index=True,
+        column_config={
+            "本週變化%": st.column_config.NumberColumn(format="%.2f%%"),
+            "近1月變化%": st.column_config.NumberColumn(format="%.2f%%"),
+            "資料日期": st.column_config.DateColumn(format="YYYY-MM-DD"),
+        },
+    )
+
+with market_tab:
+    st.bar_chart(
+        market_df.sort_values("本週漲跌%"),
+        x="指數",
+        y="本週漲跌%",
+        horizontal=True,
+    )
+    st.dataframe(
+        market_df[MARKET_COLUMNS],
+        hide_index=True,
+        column_config={
+            "本週漲跌%": st.column_config.NumberColumn(format="%.2f%%"),
+            "近1月%": st.column_config.NumberColumn(format="%.2f%%"),
+            "資料日期": st.column_config.DateColumn(format="YYYY-MM-DD"),
+        },
+    )
+
+with industry_tab:
+    selected_industries = st.multiselect(
+        "選擇相關產業",
+        options=industry_df["產業"].drop_duplicates().tolist(),
+        default=industry_df["產業"].drop_duplicates().tolist(),
+    )
+    filtered = industry_df[industry_df["產業"].isin(selected_industries)]
+    st.bar_chart(
+        filtered.sort_values("本週變化%"),
+        x="指標",
+        y="本週變化%",
+        color="產業",
+        horizontal=True,
+    )
+    st.dataframe(
+        filtered[INDUSTRY_COLUMNS],
+        hide_index=True,
+        column_config={
+            "本週變化%": st.column_config.NumberColumn(format="%.2f%%"),
+            "近1月變化%": st.column_config.NumberColumn(format="%.2f%%"),
+            "資料日期": st.column_config.DateColumn(format="YYYY-MM-DD"),
+        },
+    )
+
+with report_tab:
+    report = build_markdown_report(inputs, market_df, industry_df, alignment)
+    st.markdown(report)
+    st.download_button(
+        "下載 Markdown 報告",
+        data=report.encode("utf-8"),
+        file_name=f"{inputs['fund_name']}_{inputs['report_date']}_一週基金分析.md",
+        mime="text/markdown",
+        icon=":material/download:",
+    )
+    with st.expander("資料來源與限制"):
+        st.markdown(
+            f"- 全球市場週報：{DEFAULT_WEEKLY_URL}\n"
+            f"- 基金分析工具：{DEFAULT_FUND_URL}\n"
+            f"- 科技供應鏈儀表板：{DEFAULT_INDUSTRY_URL}\n"
+            f"- 基金頁面：{inputs['fund_url'] or '未提供'}\n\n"
+            "Streamlit 應用頁面不適合作為穩定機器資料介面；正式自動更新應改接公開 CSV、JSON、API 或 GitHub Raw 資料。"
+        )
+

@@ -1,0 +1,5 @@
+streamlit==1.65.0
+pandas>=2.2,<3
+altair>=5.5,<7
+tabulate>=0.9,<1
+
