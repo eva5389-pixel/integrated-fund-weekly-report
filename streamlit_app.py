@@ -23,7 +23,7 @@ DATA_DIR = ROOT / "data"
 
 DEFAULT_WEEKLY_URL = "https://global-index-weekly-uc3hzgjlbdrzsnkqe8ybar.streamlit.app/"
 DEFAULT_FUND_URL = "https://fund-analysis-report-generator-caafenpfzpxbybgeldumwp.streamlit.app/"
-DEFAULT_INDUSTRY_URL = "https://semiconductor-memory-inventory-dashboard-kne2d52og26vgaeohcvkc.streamlit.app/"
+DEFAULT_INDUSTRY_URL = "https://industry-supply-chain-dashboard-ehrr5pn5wzf6csv2ke8mh8.streamlit.app/"
 
 
 st.set_page_config(
