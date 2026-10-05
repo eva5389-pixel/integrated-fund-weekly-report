@@ -1,7 +1,7 @@
 import pandas as pd
 
 from utils.analysis import classify_alignment, normalize_industry_data
-from utils.fund_metadata import extract_fund_metadata
+from utils.fund_metadata import _resolve_moneydj_wrapper_url, extract_fund_metadata
 
 
 def test_classify_alignment_positive():
@@ -36,3 +36,18 @@ def test_benchmark_is_not_guessed_when_missing():
     result = extract_fund_metadata("<h1>5808統一奔騰基金</h1>")
     assert result["fund_name"] == "5808統一奔騰基金"
     assert result["benchmark"] == ""
+
+
+def test_moneydj_bank_wrapper_is_resolved_to_fund_page():
+    wrapper = (
+        "https://tcbbankfund.moneydj.com/main.html?"
+        "sUrl=%24W%24WR%24WR03%5DDJHTM%7BA%7DACPS10-5808"
+    )
+    assert _resolve_moneydj_wrapper_url(wrapper) == (
+        "https://tcbbankfund.moneydj.com/w/wr/wr03.djhtm?a=ACPS10-5808"
+    )
+
+
+def test_specific_fund_name_wins_over_generic_page_heading():
+    html = "<h1>國內基金-績效比較</h1><h3>5808統一奔騰基金 基金</h3>"
+    assert extract_fund_metadata(html)["fund_name"] == "5808統一奔騰基金"
