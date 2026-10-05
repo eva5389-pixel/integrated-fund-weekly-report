@@ -4,6 +4,7 @@ from datetime import date
 from pathlib import Path
 
 import pandas as pd
+import requests
 import streamlit as st
 
 from utils.analysis import (
@@ -14,6 +15,7 @@ from utils.analysis import (
     normalize_industry_data,
     normalize_market_data,
 )
+from utils.fund_metadata import fetch_fund_metadata
 
 
 ROOT = Path(__file__).parent
@@ -44,6 +46,9 @@ def read_upload(upload, fallback_name: str) -> pd.DataFrame:
 
 if "report_ready" not in st.session_state:
     st.session_state.report_ready = False
+st.session_state.setdefault("fund_url_input", "")
+st.session_state.setdefault("fund_name_input", "示範半導體基金")
+st.session_state.setdefault("benchmark_input", "費城半導體指數")
 
 st.title("基金與產業一週整合報告")
 st.caption(
@@ -56,16 +61,39 @@ with st.container(horizontal=True):
     st.link_button("原基金分析工具", DEFAULT_FUND_URL, icon=":material/monitoring:")
     st.link_button("科技供應鏈儀表板", DEFAULT_INDUSTRY_URL, icon=":material/memory:")
 
+with st.container(border=True):
+    st.subheader("基金網址辨識")
+    st.text_input(
+        "基金網址",
+        key="fund_url_input",
+        placeholder="貼上 MoneyDJ、基富通或其他公開基金頁面網址",
+        help="按下自動辨識後，系統會讀取公開頁面的基金名稱及 Benchmark；抓不到時不會自行猜測。",
+    )
+    if st.button("自動抓基金名稱與 Benchmark", icon=":material/auto_awesome:"):
+        if not st.session_state.fund_url_input.strip():
+            st.warning("請先貼上基金網址。")
+        else:
+            try:
+                with st.spinner("正在讀取基金公開頁面…"):
+                    metadata = fetch_fund_metadata(st.session_state.fund_url_input.strip())
+                if metadata["fund_name"]:
+                    st.session_state.fund_name_input = metadata["fund_name"]
+                if metadata["benchmark"]:
+                    st.session_state.benchmark_input = metadata["benchmark"]
+                if metadata["fund_name"] and metadata["benchmark"]:
+                    st.success("已自動辨識基金名稱與 Benchmark，可在下方確認或修正。")
+                elif metadata["fund_name"]:
+                    st.warning("已抓到基金名稱，但來源頁未提供可辨識的 Benchmark，請手動補充。")
+                else:
+                    st.warning("已抓到 Benchmark，但基金名稱仍需手動確認。")
+            except (ValueError, requests.RequestException) as exc:
+                st.error(f"自動辨識失敗：{exc}")
+
 with st.form("report_inputs", border=True):
     st.subheader("報告設定")
-    fund_url = st.text_input(
-        "基金網址",
-        placeholder="貼上 MoneyDJ、Yahoo 或其他基金頁面網址",
-        help="網址會列入報告來源。基金數值請由下方欄位或上傳檔案提供。",
-    )
     with st.container(horizontal=True):
-        fund_name = st.text_input("基金名稱", value="示範半導體基金")
-        benchmark = st.text_input("Benchmark", value="費城半導體指數")
+        fund_name = st.text_input("基金名稱", key="fund_name_input")
+        benchmark = st.text_input("Benchmark", key="benchmark_input")
         report_date = st.date_input("報告日期", value=date.today())
 
     st.markdown("**基金指標**")
@@ -103,7 +131,7 @@ if submitted:
         st.session_state.market_df = market_df
         st.session_state.industry_df = industry_df
         st.session_state.inputs = {
-            "fund_url": fund_url,
+            "fund_url": st.session_state.fund_url_input,
             "fund_name": fund_name,
             "benchmark": benchmark,
             "report_date": report_date.isoformat(),
@@ -222,4 +250,3 @@ with report_tab:
             f"- 基金頁面：{inputs['fund_url'] or '未提供'}\n\n"
             "Streamlit 應用頁面不適合作為穩定機器資料介面；正式自動更新應改接公開 CSV、JSON、API 或 GitHub Raw 資料。"
         )
-
