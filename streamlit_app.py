@@ -15,17 +15,7 @@ from utils.analysis import (
     normalize_industry_data,
     normalize_market_data,
 )
-from utils.fund_metadata import (
-    fetch_fund_metadata,
-    fetch_fund_top_holdings,
-    fetch_fund_top_industries,
-)
-from utils.live_data import (
-    build_html_report,
-    fetch_industry_data,
-    fetch_market_weekly,
-    market_summary,
-)
+from utils import fund_metadata, live_data
 
 
 ROOT = Path(__file__).parent
@@ -50,7 +40,7 @@ def load_example(name: str) -> pd.DataFrame:
 
 @st.cache_data(ttl="15m", max_entries=4, show_spinner=False)
 def load_live_markets() -> pd.DataFrame:
-    return fetch_market_weekly()
+    return live_data.fetch_market_weekly()
 
 
 @st.cache_data(ttl="15m", max_entries=20, show_spinner=False)
@@ -66,7 +56,7 @@ def load_live_industries(
         {"公司／持股": name, "基金持股權重%": weight}
         for name, weight in fund_holdings
     ]
-    return fetch_industry_data(items, holding_items)
+    return live_data.fetch_industry_data(items, holding_items)
 
 
 def read_upload(upload, fallback_name: str) -> pd.DataFrame:
@@ -115,17 +105,19 @@ with st.container(border=True):
         else:
             try:
                 with st.spinner("正在讀取基金公開頁面…"):
-                    metadata = fetch_fund_metadata(st.session_state.fund_url_input.strip())
+                    metadata = fund_metadata.fetch_fund_metadata(
+                        st.session_state.fund_url_input.strip()
+                    )
                 if metadata["fund_name"]:
                     st.session_state.fund_name_input = metadata["fund_name"]
                 if metadata["benchmark"]:
                     st.session_state.benchmark_input = metadata["benchmark"]
-                top_industries = fetch_fund_top_industries(
+                top_industries = fund_metadata.fetch_fund_top_industries(
                     st.session_state.fund_url_input.strip()
                 )
                 if top_industries:
                     st.session_state.top_industries_data = top_industries
-                st.session_state.fund_top_holdings = fetch_fund_top_holdings(
+                st.session_state.fund_top_holdings = fund_metadata.fetch_fund_top_holdings(
                     st.session_state.fund_url_input.strip()
                 )
                 if metadata["fund_name"] and metadata["benchmark"]:
@@ -294,7 +286,7 @@ with overview:
     )
 
 with market_tab:
-    st.info(market_summary(market_df))
+    st.info(live_data.market_summary(market_df))
     st.bar_chart(
         market_df.sort_values("本週漲跌%"),
         x="指數",
@@ -360,7 +352,9 @@ with industry_tab:
 
 with report_tab:
     report = build_markdown_report(inputs, market_df, industry_df, alignment, holdings_df)
-    html_report = build_html_report(inputs, market_df, industry_df, alignment, holdings_df)
+    html_report = live_data.build_html_report(
+        inputs, market_df, industry_df, alignment, holdings_df
+    )
     st.markdown(report)
     st.download_button(
         "下載 Markdown 報告",
