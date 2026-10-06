@@ -8,7 +8,7 @@ import pandas as pd
 import requests
 import streamlit as st
 
-from utils import analysis, fund_metadata, live_data
+from utils import analysis, export_documents, fund_metadata, live_data
 
 
 # Streamlit Cloud may keep imported modules alive across a Git hot update. Reload all
@@ -16,6 +16,7 @@ from utils import analysis, fund_metadata, live_data
 analysis = importlib.reload(analysis)
 fund_metadata = importlib.reload(fund_metadata)
 live_data = importlib.reload(live_data)
+export_documents = importlib.reload(export_documents)
 INDUSTRY_COLUMNS = analysis.INDUSTRY_COLUMNS
 MARKET_COLUMNS = analysis.MARKET_COLUMNS
 
@@ -406,6 +407,12 @@ with report_tab:
     html_report = live_data.build_html_report(
         inputs, market_df, industry_df, alignment, holdings_df
     )
+    docx_report = export_documents.build_docx_report(
+        inputs, market_df, industry_df, alignment, holdings_df
+    )
+    pdf_report = export_documents.build_pdf_report(
+        inputs, market_df, industry_df, alignment, holdings_df
+    )
     st.markdown(report)
     st.download_button(
         "下載 Markdown 報告",
@@ -422,6 +429,21 @@ with report_tab:
         icon=":material/web:",
         type="primary",
     )
+    with st.container(horizontal=True):
+        st.download_button(
+            "下載 Word 報告",
+            data=docx_report,
+            file_name=f"{inputs['fund_name']}_{inputs['report_date']}_一週基金分析.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            icon=":material/description:",
+        )
+        st.download_button(
+            "下載 PDF 報告",
+            data=pdf_report,
+            file_name=f"{inputs['fund_name']}_{inputs['report_date']}_一週基金分析.pdf",
+            mime="application/pdf",
+            icon=":material/picture_as_pdf:",
+        )
     with st.expander("資料來源與限制"):
         st.markdown(
             f"- 全球市場週報：{DEFAULT_WEEKLY_URL}\n"
