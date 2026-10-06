@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 from datetime import date
 from pathlib import Path
 
@@ -7,15 +8,16 @@ import pandas as pd
 import requests
 import streamlit as st
 
-from utils.analysis import (
-    INDUSTRY_COLUMNS,
-    MARKET_COLUMNS,
-    build_markdown_report,
-    classify_alignment,
-    normalize_industry_data,
-    normalize_market_data,
-)
-from utils import fund_metadata, live_data
+from utils import analysis, fund_metadata, live_data
+
+
+# Streamlit Cloud may keep imported modules alive across a Git hot update. Reload all
+# version-coupled helpers so a new app file never calls an older cached module.
+analysis = importlib.reload(analysis)
+fund_metadata = importlib.reload(fund_metadata)
+live_data = importlib.reload(live_data)
+INDUSTRY_COLUMNS = analysis.INDUSTRY_COLUMNS
+MARKET_COLUMNS = analysis.MARKET_COLUMNS
 
 
 ROOT = Path(__file__).parent
@@ -56,7 +58,10 @@ def load_live_industries(
         {"公司／持股": name, "基金持股權重%": weight}
         for name, weight in fund_holdings
     ]
-    return live_data.fetch_industry_data(items, holding_items)
+    loader = getattr(live_data, "fetch_industry_data", None)
+    if loader is None:
+        return live_data.fetch_industry_weekly(items), pd.DataFrame()
+    return loader(items, holding_items)
 
 
 def read_upload(upload, fallback_name: str) -> pd.DataFrame:
@@ -117,8 +122,11 @@ with st.container(border=True):
                 )
                 if top_industries:
                     st.session_state.top_industries_data = top_industries
-                st.session_state.fund_top_holdings = fund_metadata.fetch_fund_top_holdings(
-                    st.session_state.fund_url_input.strip()
+                holdings_loader = getattr(fund_metadata, "fetch_fund_top_holdings", None)
+                st.session_state.fund_top_holdings = (
+                    holdings_loader(st.session_state.fund_url_input.strip())
+                    if holdings_loader
+                    else []
                 )
                 if metadata["fund_name"] and metadata["benchmark"]:
                     st.success("已自動辨識基金名稱與 Benchmark，可在下方確認或修正。")
@@ -215,8 +223,8 @@ if submitted:
         else:
             industry_raw = read_upload(industry_upload, "industry_weekly.csv")
             holdings_df = pd.DataFrame()
-        market_df = normalize_market_data(market_raw)
-        industry_df = normalize_industry_data(industry_raw)
+        market_df = analysis.normalize_market_data(market_raw)
+        industry_df = analysis.normalize_industry_data(industry_raw)
         if "持股權重%" not in industry_df:
             industry_df["持股權重%"] = float("nan")
         st.session_state.market_df = market_df
@@ -248,7 +256,7 @@ market_df = st.session_state.market_df
 industry_df = st.session_state.industry_df
 holdings_df = st.session_state.get("holdings_df", pd.DataFrame())
 excess_return = inputs["fund_week"] - inputs["benchmark_week"]
-alignment = classify_alignment(
+alignment = analysis.classify_alignment(
     fund_week=inputs["fund_week"],
     benchmark_week=inputs["benchmark_week"],
     industry_week=float(industry_df["本週變化%"].mean()),
@@ -351,7 +359,9 @@ with industry_tab:
             st.caption("使用者貼入內容，未經本工具獨立查證；請核對原始來源與日期。")
 
 with report_tab:
-    report = build_markdown_report(inputs, market_df, industry_df, alignment, holdings_df)
+    report = analysis.build_markdown_report(
+        inputs, market_df, industry_df, alignment, holdings_df
+    )
     html_report = live_data.build_html_report(
         inputs, market_df, industry_df, alignment, holdings_df
     )
