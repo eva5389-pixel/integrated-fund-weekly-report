@@ -11,13 +11,14 @@ def _normalize(df: pd.DataFrame, columns: list[str], numeric: list[str]) -> pd.D
     missing = [column for column in columns if column not in df.columns]
     if missing:
         raise ValueError(f"缺少必要欄位：{', '.join(missing)}")
-    result = df[columns].copy()
+    result = df.copy()
     for column in numeric:
         result[column] = pd.to_numeric(result[column], errors="coerce")
     result["資料日期"] = pd.to_datetime(result["資料日期"], errors="coerce")
     if result[numeric].isna().all(axis=None):
         raise ValueError("數值欄位沒有可用資料")
-    return result
+    extras = [column for column in result.columns if column not in columns]
+    return result[columns + extras]
 
 
 def normalize_market_data(df: pd.DataFrame) -> pd.DataFrame:
@@ -51,7 +52,13 @@ def _table_markdown(df: pd.DataFrame, columns: list[str], limit: int = 8) -> str
     for column in [c for c in columns if "%" in c]:
         view[column] = view[column].map(lambda value: "資料不足" if pd.isna(value) else f"{value:.2f}%")
     view["資料日期"] = view["資料日期"].dt.strftime("%Y-%m-%d").fillna("資料不足")
-    return view.to_markdown(index=False)
+    header = "| " + " | ".join(columns) + " |"
+    separator = "| " + " | ".join("---" for _ in columns) + " |"
+    rows = [
+        "| " + " | ".join(str(value).replace("|", "\\|") for value in row) + " |"
+        for row in view.itertuples(index=False, name=None)
+    ]
+    return "\n".join([header, separator, *rows])
 
 
 def build_markdown_report(
@@ -102,4 +109,3 @@ def build_markdown_report(
 
 > 本報告僅供市場研究，不構成投資建議。
 """
-

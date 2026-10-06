@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 import re
 import socket
 import ssl
@@ -189,3 +190,47 @@ def fetch_fund_metadata(url: str) -> dict[str, str]:
     if not result["fund_name"] and not result["benchmark"]:
         raise ValueError("這個頁面沒有可辨識的基金名稱或 Benchmark，請手動填寫。")
     return result
+
+
+def fetch_fund_top_industries(url: str, limit: int = 3) -> list[dict]:
+    """Read and aggregate MoneyDJ's public fund industry allocation."""
+    decoded = unquote(url.strip())
+    parsed = urlparse(decoded)
+    if not parsed.hostname or not parsed.hostname.lower().endswith(".moneydj.com"):
+        return []
+    candidates = [parse_qs(parsed.query).get("a", [""])[0]]
+    candidates.append(parse_qs(parsed.query).get("sUrl", [""])[0])
+    joined = " ".join(candidates)
+    match = re.search(r"(AC[A-Z0-9]+)(?:-[A-Z0-9]+)?", joined, flags=re.IGNORECASE)
+    if not match:
+        return []
+    code = match.group(1).upper()
+    endpoint = urlunparse(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            "/jsondata/djjson/fundjsondata.xdjjson",
+            "",
+            urlencode({"x": "wr04p3", "a": code}),
+            "",
+        )
+    )
+    payload, _ = _download_html(endpoint)
+    records = json.loads(payload).get("ResultSet", {}).get("Result", [])
+    aggregated: dict[str, float] = {}
+    data_date = ""
+    for record in records:
+        name = re.sub(r"^(?:上市|上櫃)", "", str(record.get("V2", "")).strip())
+        if not name or name == "合計":
+            continue
+        try:
+            weight = float(record.get("V3"))
+        except (TypeError, ValueError):
+            continue
+        aggregated[name] = aggregated.get(name, 0.0) + weight
+        data_date = data_date or str(record.get("V1", ""))
+    ranked = sorted(aggregated.items(), key=lambda item: item[1], reverse=True)[:limit]
+    return [
+        {"產業": name, "持股權重%": round(weight, 2), "持股資料日期": data_date}
+        for name, weight in ranked
+    ]

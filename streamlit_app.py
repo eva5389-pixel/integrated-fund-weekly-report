@@ -15,7 +15,13 @@ from utils.analysis import (
     normalize_industry_data,
     normalize_market_data,
 )
-from utils.fund_metadata import fetch_fund_metadata
+from utils.fund_metadata import fetch_fund_metadata, fetch_fund_top_industries
+from utils.live_data import (
+    build_html_report,
+    fetch_industry_weekly,
+    fetch_market_weekly,
+    market_summary,
+)
 
 
 ROOT = Path(__file__).parent
@@ -38,6 +44,20 @@ def load_example(name: str) -> pd.DataFrame:
     return pd.read_csv(DATA_DIR / name)
 
 
+@st.cache_data(ttl="15m", max_entries=4, show_spinner=False)
+def load_live_markets() -> pd.DataFrame:
+    return fetch_market_weekly()
+
+
+@st.cache_data(ttl="15m", max_entries=20, show_spinner=False)
+def load_live_industries(records: tuple[tuple[str, float, str], ...]) -> pd.DataFrame:
+    items = [
+        {"產業": name, "持股權重%": weight, "持股資料日期": data_date}
+        for name, weight, data_date in records
+    ]
+    return fetch_industry_weekly(items)
+
+
 def read_upload(upload, fallback_name: str) -> pd.DataFrame:
     if upload is None:
         return load_example(fallback_name).copy()
@@ -49,6 +69,14 @@ if "report_ready" not in st.session_state:
 st.session_state.setdefault("fund_url_input", "")
 st.session_state.setdefault("fund_name_input", "示範半導體基金")
 st.session_state.setdefault("benchmark_input", "費城半導體指數")
+st.session_state.setdefault(
+    "top_industries_data",
+    [
+        {"產業": "半導體業", "持股權重%": 0.0, "持股資料日期": ""},
+        {"產業": "電子零組件業", "持股權重%": 0.0, "持股資料日期": ""},
+        {"產業": "電腦及週邊設備業", "持股權重%": 0.0, "持股資料日期": ""},
+    ],
+)
 
 st.title("基金與產業一週整合報告")
 st.caption(
@@ -80,6 +108,11 @@ with st.container(border=True):
                     st.session_state.fund_name_input = metadata["fund_name"]
                 if metadata["benchmark"]:
                     st.session_state.benchmark_input = metadata["benchmark"]
+                top_industries = fetch_fund_top_industries(
+                    st.session_state.fund_url_input.strip()
+                )
+                if top_industries:
+                    st.session_state.top_industries_data = top_industries
                 if metadata["fund_name"] and metadata["benchmark"]:
                     st.success("已自動辨識基金名稱與 Benchmark，可在下方確認或修正。")
                 elif metadata["fund_name"]:
@@ -106,6 +139,24 @@ with st.form("report_inputs", border=True):
         max_drawdown = st.number_input("最大回撤 %", value=-14.2, step=0.1)
 
     st.markdown("**資料檔案（選填）**")
+    auto_live = st.checkbox(
+        "自動取得全球市場與前三大產業行情",
+        value=True,
+        help="未上傳 CSV 時，依全球市場週報相同口徑讀取 Yahoo Finance 公開行情。",
+    )
+    st.markdown("**基金持股前三大產業**")
+    top_industries_editor = st.data_editor(
+        pd.DataFrame(st.session_state.top_industries_data),
+        hide_index=True,
+        num_rows="fixed",
+        key="top_industries_editor",
+        column_config={
+            "產業": st.column_config.TextColumn(required=True),
+            "持股權重%": st.column_config.NumberColumn(format="%.2f%%", min_value=0.0),
+            "持股資料日期": st.column_config.TextColumn(disabled=True),
+        },
+    )
+    st.caption("MoneyDJ 可辨識時會自動帶入；仍可修改產業名稱及權重。")
     with st.container(horizontal=True):
         market_upload = st.file_uploader(
             "市場週資料 CSV",
@@ -124,10 +175,29 @@ with st.form("report_inputs", border=True):
 
 if submitted:
     try:
-        market_df = normalize_market_data(read_upload(market_upload, "market_weekly.csv"))
-        industry_df = normalize_industry_data(
-            read_upload(industry_upload, "industry_weekly.csv")
-        )
+        if auto_live and market_upload is None:
+            with st.spinner("正在更新全球市場一週行情…"):
+                market_raw = load_live_markets()
+        else:
+            market_raw = read_upload(market_upload, "market_weekly.csv")
+        if auto_live and industry_upload is None:
+            records = tuple(
+                (
+                    str(row["產業"]).strip(),
+                    float(row["持股權重%"] or 0),
+                    str(row.get("持股資料日期", "")),
+                )
+                for row in top_industries_editor.to_dict("records")
+                if str(row["產業"]).strip()
+            )
+            with st.spinner("正在計算前三大產業代表公司近一週變化…"):
+                industry_raw = load_live_industries(records)
+        else:
+            industry_raw = read_upload(industry_upload, "industry_weekly.csv")
+        market_df = normalize_market_data(market_raw)
+        industry_df = normalize_industry_data(industry_raw)
+        if "持股權重%" not in industry_df:
+            industry_df["持股權重%"] = float("nan")
         st.session_state.market_df = market_df
         st.session_state.industry_df = industry_df
         st.session_state.inputs = {
@@ -143,7 +213,7 @@ if submitted:
             "max_drawdown": float(max_drawdown),
         }
         st.session_state.report_ready = True
-    except (ValueError, pd.errors.ParserError) as exc:
+    except (ValueError, pd.errors.ParserError, requests.RequestException) as exc:
         st.error(f"資料格式無法讀取：{exc}")
 
 if not st.session_state.report_ready:
@@ -192,6 +262,7 @@ with overview:
     )
 
 with market_tab:
+    st.info(market_summary(market_df))
     st.bar_chart(
         market_df.sort_values("本週漲跌%"),
         x="指數",
@@ -223,9 +294,10 @@ with industry_tab:
         horizontal=True,
     )
     st.dataframe(
-        filtered[INDUSTRY_COLUMNS],
+        filtered[["產業", "持股權重%"] + [c for c in INDUSTRY_COLUMNS if c != "產業"]],
         hide_index=True,
         column_config={
+            "持股權重%": st.column_config.NumberColumn(format="%.2f%%"),
             "本週變化%": st.column_config.NumberColumn(format="%.2f%%"),
             "近1月變化%": st.column_config.NumberColumn(format="%.2f%%"),
             "資料日期": st.column_config.DateColumn(format="YYYY-MM-DD"),
@@ -234,6 +306,7 @@ with industry_tab:
 
 with report_tab:
     report = build_markdown_report(inputs, market_df, industry_df, alignment)
+    html_report = build_html_report(inputs, market_df, industry_df, alignment)
     st.markdown(report)
     st.download_button(
         "下載 Markdown 報告",
@@ -241,6 +314,14 @@ with report_tab:
         file_name=f"{inputs['fund_name']}_{inputs['report_date']}_一週基金分析.md",
         mime="text/markdown",
         icon=":material/download:",
+    )
+    st.download_button(
+        "一鍵下載 HTML 網頁報告",
+        data=html_report.encode("utf-8"),
+        file_name=f"{inputs['fund_name']}_{inputs['report_date']}_一週基金分析.html",
+        mime="text/html",
+        icon=":material/web:",
+        type="primary",
     )
     with st.expander("資料來源與限制"):
         st.markdown(
