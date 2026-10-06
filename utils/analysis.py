@@ -51,7 +51,8 @@ def _table_markdown(df: pd.DataFrame, columns: list[str], limit: int = 8) -> str
     view = df[columns].head(limit).copy()
     for column in [c for c in columns if "%" in c]:
         view[column] = view[column].map(lambda value: "資料不足" if pd.isna(value) else f"{value:.2f}%")
-    view["資料日期"] = view["資料日期"].dt.strftime("%Y-%m-%d").fillna("資料不足")
+    for column in [c for c in columns if "日期" in c]:
+        view[column] = pd.to_datetime(view[column], errors="coerce").dt.strftime("%Y-%m-%d").fillna("資料不足")
     header = "| " + " | ".join(columns) + " |"
     separator = "| " + " | ".join("---" for _ in columns) + " |"
     rows = [
@@ -66,6 +67,7 @@ def build_markdown_report(
     market_df: pd.DataFrame,
     industry_df: pd.DataFrame,
     alignment: str,
+    holdings_df: pd.DataFrame | None = None,
 ) -> str:
     excess = inputs["fund_week"] - inputs["benchmark_week"]
     industry_mean = industry_df["本週變化%"].mean()
@@ -75,6 +77,13 @@ def build_markdown_report(
     industry_table = _table_markdown(
         industry_df.sort_values("本週變化%", ascending=False), INDUSTRY_COLUMNS
     )
+    holding_columns = ["產業", "公司／持股", "代碼", "基金持股權重%", "本週變化%", "近1月變化%", "趨勢", "行情日期", "資料性質"]
+    holdings_table = (
+        _table_markdown(holdings_df, holding_columns, limit=20)
+        if holdings_df is not None and not holdings_df.empty
+        else "逐檔行情資料不足。"
+    )
+    news_content = str(inputs.get("news_content", "")).strip() or "未提供新聞內容。"
     return f"""# {inputs['fund_name']} 一週基金分析報告
 
 資料日期：{inputs['report_date']}
@@ -99,6 +108,16 @@ def build_markdown_report(
 ## 相關產業一週
 
 {industry_table}
+
+## 前三大產業代表持股／公司一週變化
+
+{holdings_table}
+
+## 新聞內容與市場觀察
+
+{news_content}
+
+> 本段新聞為使用者貼入內容，未經本工具獨立查證；請保留原始來源與日期並另行核對。
 
 ## 觀察重點
 

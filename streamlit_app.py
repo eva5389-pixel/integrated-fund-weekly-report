@@ -15,10 +15,14 @@ from utils.analysis import (
     normalize_industry_data,
     normalize_market_data,
 )
-from utils.fund_metadata import fetch_fund_metadata, fetch_fund_top_industries
+from utils.fund_metadata import (
+    fetch_fund_metadata,
+    fetch_fund_top_holdings,
+    fetch_fund_top_industries,
+)
 from utils.live_data import (
     build_html_report,
-    fetch_industry_weekly,
+    fetch_industry_data,
     fetch_market_weekly,
     market_summary,
 )
@@ -50,12 +54,19 @@ def load_live_markets() -> pd.DataFrame:
 
 
 @st.cache_data(ttl="15m", max_entries=20, show_spinner=False)
-def load_live_industries(records: tuple[tuple[str, float, str], ...]) -> pd.DataFrame:
+def load_live_industries(
+    records: tuple[tuple[str, float, str], ...],
+    fund_holdings: tuple[tuple[str, float], ...],
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     items = [
         {"產業": name, "持股權重%": weight, "持股資料日期": data_date}
         for name, weight, data_date in records
     ]
-    return fetch_industry_weekly(items)
+    holding_items = [
+        {"公司／持股": name, "基金持股權重%": weight}
+        for name, weight in fund_holdings
+    ]
+    return fetch_industry_data(items, holding_items)
 
 
 def read_upload(upload, fallback_name: str) -> pd.DataFrame:
@@ -77,6 +88,7 @@ st.session_state.setdefault(
         {"產業": "電腦及週邊設備業", "持股權重%": 0.0, "持股資料日期": ""},
     ],
 )
+st.session_state.setdefault("fund_top_holdings", [])
 
 st.title("基金與產業一週整合報告")
 st.caption(
@@ -113,6 +125,9 @@ with st.container(border=True):
                 )
                 if top_industries:
                     st.session_state.top_industries_data = top_industries
+                st.session_state.fund_top_holdings = fetch_fund_top_holdings(
+                    st.session_state.fund_url_input.strip()
+                )
                 if metadata["fund_name"] and metadata["benchmark"]:
                     st.success("已自動辨識基金名稱與 Benchmark，可在下方確認或修正。")
                 elif metadata["fund_name"]:
@@ -157,6 +172,12 @@ with st.form("report_inputs", border=True):
         },
     )
     st.caption("MoneyDJ 可辨識時會自動帶入；仍可修改產業名稱及權重。")
+    news_content = st.text_area(
+        "新聞內容與市場觀察（選填）",
+        placeholder="貼入新聞摘要、事件原因、政策變化與來源網址；產生報告時會自動加入。",
+        height=150,
+        help="內容會原樣納入報告並標示為使用者提供、尚待來源核對。",
+    )
     with st.container(horizontal=True):
         market_upload = st.file_uploader(
             "市場週資料 CSV",
@@ -191,15 +212,24 @@ if submitted:
                 if str(row["產業"]).strip()
             )
             with st.spinner("正在計算前三大產業代表公司近一週變化…"):
-                industry_raw = load_live_industries(records)
+                published_holdings = tuple(
+                    (
+                        str(row.get("公司／持股", "")),
+                        float(row.get("基金持股權重%", 0)),
+                    )
+                    for row in st.session_state.fund_top_holdings
+                )
+                industry_raw, holdings_df = load_live_industries(records, published_holdings)
         else:
             industry_raw = read_upload(industry_upload, "industry_weekly.csv")
+            holdings_df = pd.DataFrame()
         market_df = normalize_market_data(market_raw)
         industry_df = normalize_industry_data(industry_raw)
         if "持股權重%" not in industry_df:
             industry_df["持股權重%"] = float("nan")
         st.session_state.market_df = market_df
         st.session_state.industry_df = industry_df
+        st.session_state.holdings_df = holdings_df
         st.session_state.inputs = {
             "fund_url": st.session_state.fund_url_input,
             "fund_name": fund_name,
@@ -211,6 +241,7 @@ if submitted:
             "sharpe": float(sharpe),
             "beta": float(beta),
             "max_drawdown": float(max_drawdown),
+            "news_content": news_content.strip(),
         }
         st.session_state.report_ready = True
     except (ValueError, pd.errors.ParserError, requests.RequestException) as exc:
@@ -223,6 +254,7 @@ if not st.session_state.report_ready:
 inputs = st.session_state.inputs
 market_df = st.session_state.market_df
 industry_df = st.session_state.industry_df
+holdings_df = st.session_state.get("holdings_df", pd.DataFrame())
 excess_return = inputs["fund_week"] - inputs["benchmark_week"]
 alignment = classify_alignment(
     fund_week=inputs["fund_week"],
@@ -303,10 +335,32 @@ with industry_tab:
             "資料日期": st.column_config.DateColumn(format="YYYY-MM-DD"),
         },
     )
+    st.markdown("#### 前三大產業代表持股／公司一週變化")
+    if holdings_df.empty:
+        st.warning("逐檔行情資料不足；上傳產業 CSV 時不會自行推測代表持股。")
+    else:
+        visible_holdings = holdings_df[holdings_df["產業"].isin(selected_industries)]
+        st.dataframe(
+            visible_holdings,
+            hide_index=True,
+            column_config={
+                "基金持股權重%": st.column_config.NumberColumn(format="%.2f%%"),
+                "本週變化%": st.column_config.NumberColumn(format="%+.2f%%"),
+                "近1月變化%": st.column_config.NumberColumn(format="%+.2f%%"),
+                "行情日期": st.column_config.DateColumn(format="YYYY-MM-DD"),
+            },
+        )
+        st.caption("優先列出 MoneyDJ 公開持股中可對應前三大產業的股票；無法對應時才使用產業代表公司。資料性質欄會明確標示，且不代表完整持股名單。")
+
+    if inputs.get("news_content"):
+        with st.container(border=True):
+            st.markdown("#### 新聞內容與市場觀察")
+            st.write(inputs["news_content"])
+            st.caption("使用者貼入內容，未經本工具獨立查證；請核對原始來源與日期。")
 
 with report_tab:
-    report = build_markdown_report(inputs, market_df, industry_df, alignment)
-    html_report = build_html_report(inputs, market_df, industry_df, alignment)
+    report = build_markdown_report(inputs, market_df, industry_df, alignment, holdings_df)
+    html_report = build_html_report(inputs, market_df, industry_df, alignment, holdings_df)
     st.markdown(report)
     st.download_button(
         "下載 Markdown 報告",

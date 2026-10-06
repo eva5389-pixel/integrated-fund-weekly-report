@@ -234,3 +234,39 @@ def fetch_fund_top_industries(url: str, limit: int = 3) -> list[dict]:
         {"產業": name, "持股權重%": round(weight, 2), "持股資料日期": data_date}
         for name, weight in ranked
     ]
+
+
+def fetch_fund_top_holdings(url: str, limit: int = 10) -> list[dict]:
+    """Read MoneyDJ's published top holdings table when the page provides it."""
+    resolved = _resolve_moneydj_wrapper_url(unquote(url.strip()))
+    parsed = urlparse(resolved)
+    if not parsed.hostname or not parsed.hostname.lower().endswith(".moneydj.com"):
+        return []
+    query = parse_qs(parsed.query)
+    fund_id = query.get("a", [""])[0]
+    if not fund_id:
+        return []
+    holdings_url = urlunparse(
+        (parsed.scheme, parsed.netloc, "/w/wr/wr04.djhtm", "", urlencode({"a": fund_id}), "")
+    )
+    html, _ = _download_html(holdings_url)
+    soup = BeautifulSoup(html, "html.parser")
+    holdings = []
+    seen = set()
+    for row in soup.select("table tr"):
+        cells = [_clean(cell.get_text(" ", strip=True)) for cell in row.find_all("td")]
+        for start in (0, 4):
+            if len(cells) < start + 3:
+                continue
+            name = cells[start]
+            try:
+                weight = float(cells[start + 2].replace("%", "").replace(",", ""))
+            except (TypeError, ValueError):
+                continue
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            holdings.append({"公司／持股": name, "基金持股權重%": weight})
+            if len(holdings) >= limit:
+                return holdings
+    return holdings
