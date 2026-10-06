@@ -214,26 +214,64 @@ def fetch_fund_top_industries(url: str, limit: int = 3) -> list[dict]:
     if not match:
         return []
     code = match.group(1).upper()
-    endpoint = urlunparse(
-        (
-            parsed.scheme,
-            parsed.netloc,
-            "/jsondata/djjson/fundjsondata.xdjjson",
-            "",
-            urlencode({"x": "wr04p3", "a": code}),
-            "",
+    def load_records(dataset: str) -> list[dict]:
+        endpoint = urlunparse(
+            (
+                parsed.scheme,
+                parsed.netloc,
+                "/jsondata/djjson/fundjsondata.xdjjson",
+                "",
+                urlencode({"x": dataset, "a": code}),
+                "",
+            )
         )
-    )
-    payload, _ = _download_html(endpoint)
-    records = json.loads(payload).get("ResultSet", {}).get("Result", [])
+        payload, _ = _download_html(endpoint)
+        return json.loads(payload).get("ResultSet", {}).get("Result", [])
+
+    dataset = "wr04p3"
+    records = load_records(dataset)
+    if not records:
+        # Some domestic/global funds publish only the broader "持有類股"
+        # dataset. It mixes sectors with regions/cash, so filter non-industries.
+        dataset = "wr04p2"
+        records = load_records(dataset)
+
     aggregated: dict[str, float] = {}
     data_date = ""
+    non_industries = {
+        "合計",
+        "存款",
+        "現金",
+        "北美",
+        "亞洲不含日本",
+        "大陸地區",
+        "中國",
+        "香港",
+        "臺灣",
+        "台灣",
+        "日本",
+        "歐洲",
+        "新興市場",
+        "其他",
+    }
+    canonical_names = {
+        "半導體": "半導體業",
+        "電子零組件": "電子零組件業",
+        "通信網路": "通信網路業",
+        "電腦及週邊設備": "電腦及週邊設備業",
+        "其他電子": "其他電子業",
+        "金融保險": "金融保險業",
+        "生技醫療": "生技醫療業",
+    }
     for record in records:
-        name = re.sub(r"^(?:上市|上櫃)", "", str(record.get("V2", "")).strip())
-        if not name or name == "合計":
+        name_field = "V3" if dataset == "wr04p2" else "V2"
+        weight_field = "V4" if dataset == "wr04p2" else "V3"
+        name = re.sub(r"^(?:上市|上櫃)", "", str(record.get(name_field, "")).strip())
+        if not name or name in non_industries:
             continue
+        name = canonical_names.get(name, name)
         try:
-            weight = float(record.get("V3"))
+            weight = float(record.get(weight_field))
         except (TypeError, ValueError):
             continue
         aggregated[name] = aggregated.get(name, 0.0) + weight

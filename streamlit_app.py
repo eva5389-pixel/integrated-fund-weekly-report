@@ -160,6 +160,7 @@ with st.container(border=True):
                 )
                 if top_industries:
                     st.session_state.top_industries_data = top_industries
+                    st.session_state.pop("top_industries_editor", None)
                 holdings_loader = getattr(fund_metadata, "fetch_fund_top_holdings", None)
                 st.session_state.fund_top_holdings = (
                     holdings_loader(st.session_state.fund_url_input.strip())
