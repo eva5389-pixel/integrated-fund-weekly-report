@@ -84,6 +84,13 @@ st.session_state.setdefault(
     ],
 )
 st.session_state.setdefault("fund_top_holdings", [])
+st.session_state.setdefault("fund_week_input", 2.4)
+st.session_state.setdefault("fund_month_input", 6.8)
+st.session_state.setdefault("benchmark_week_input", 3.7)
+st.session_state.setdefault("sharpe_input", 1.25)
+st.session_state.setdefault("beta_input", 1.08)
+st.session_state.setdefault("max_drawdown_input", -14.2)
+st.session_state.setdefault("fund_metrics_note", "")
 
 st.title("基金與產業一週整合報告")
 st.caption(
@@ -104,7 +111,7 @@ with st.container(border=True):
         placeholder="貼上 MoneyDJ、基富通或其他公開基金頁面網址",
         help="按下自動辨識後，系統會讀取公開頁面的基金名稱及 Benchmark；抓不到時不會自行猜測。",
     )
-    if st.button("自動抓基金名稱與 Benchmark", icon=":material/auto_awesome:"):
+    if st.button("自動抓基金資料與 Benchmark", icon=":material/auto_awesome:"):
         if not st.session_state.fund_url_input.strip():
             st.warning("請先貼上基金網址。")
         else:
@@ -117,6 +124,37 @@ with st.container(border=True):
                     st.session_state.fund_name_input = metadata["fund_name"]
                 if metadata["benchmark"]:
                     st.session_state.benchmark_input = metadata["benchmark"]
+                metrics_loader = getattr(fund_metadata, "fetch_fund_metrics", None)
+                metrics = (
+                    metrics_loader(st.session_state.fund_url_input.strip())
+                    if metrics_loader
+                    else {}
+                )
+                metric_keys = {
+                    "fund_week": "fund_week_input",
+                    "fund_month": "fund_month_input",
+                    "sharpe": "sharpe_input",
+                    "beta": "beta_input",
+                    "max_drawdown": "max_drawdown_input",
+                }
+                for source_key, state_key in metric_keys.items():
+                    if metrics.get(source_key) is not None:
+                        st.session_state[state_key] = float(metrics[source_key])
+                benchmark_loader = getattr(live_data, "fetch_benchmark_weekly", None)
+                benchmark_stats = (
+                    benchmark_loader(st.session_state.benchmark_input)
+                    if benchmark_loader and st.session_state.benchmark_input
+                    else None
+                )
+                if metrics.get("benchmark_week") is not None:
+                    st.session_state.benchmark_week_input = float(metrics["benchmark_week"])
+                elif benchmark_stats:
+                    st.session_state.benchmark_week_input = float(benchmark_stats["week"])
+                st.session_state.fund_metrics_note = (
+                    f"基金淨值資料日：{metrics.get('nav_date', '資料不足')}；"
+                    f"最大回撤計算期間：{metrics.get('drawdown_period', '資料不足')}；"
+                    f"Benchmark：{'MoneyDJ 正式比較序列' if metrics.get('benchmark_week') is not None else (benchmark_stats['date'] if benchmark_stats else '資料不足')}。"
+                )
                 top_industries = fund_metadata.fetch_fund_top_industries(
                     st.session_state.fund_url_input.strip()
                 )
@@ -129,7 +167,7 @@ with st.container(border=True):
                     else []
                 )
                 if metadata["fund_name"] and metadata["benchmark"]:
-                    st.success("已自動辨識基金名稱與 Benchmark，可在下方確認或修正。")
+                    st.success("已自動更新基金名稱、Benchmark 與可取得的基金指標，可在下方確認。")
                 elif metadata["fund_name"]:
                     st.warning("已抓到基金名稱，但來源頁未提供可辨識的 Benchmark，請手動補充。")
                 else:
@@ -146,12 +184,14 @@ with st.form("report_inputs", border=True):
 
     st.markdown("**基金指標**")
     with st.container(horizontal=True):
-        fund_week = st.number_input("基金本週報酬 %", value=2.4, step=0.1)
-        fund_month = st.number_input("基金近一月報酬 %", value=6.8, step=0.1)
-        benchmark_week = st.number_input("Benchmark 本週報酬 %", value=3.7, step=0.1)
-        sharpe = st.number_input("Sharpe", value=1.25, step=0.05)
-        beta = st.number_input("Beta", value=1.08, step=0.05)
-        max_drawdown = st.number_input("最大回撤 %", value=-14.2, step=0.1)
+        fund_week = st.number_input("基金本週報酬 %", step=0.1, key="fund_week_input")
+        fund_month = st.number_input("基金近一月報酬 %", step=0.1, key="fund_month_input")
+        benchmark_week = st.number_input("Benchmark 本週報酬 %", step=0.1, key="benchmark_week_input")
+        sharpe = st.number_input("Sharpe", step=0.05, key="sharpe_input")
+        beta = st.number_input("Beta", step=0.05, key="beta_input")
+        max_drawdown = st.number_input("最大回撤 %", step=0.1, key="max_drawdown_input")
+    if st.session_state.fund_metrics_note:
+        st.caption(st.session_state.fund_metrics_note)
 
     st.markdown("**資料檔案（選填）**")
     auto_live = st.checkbox(

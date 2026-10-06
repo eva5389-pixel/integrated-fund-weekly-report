@@ -20,6 +20,19 @@ MARKETS = {
     "美國科技": ("Nasdaq", "^IXIC"),
     "歐洲": ("STOXX Europe 600", "^STOXX"),
 }
+BENCHMARK_TICKERS = {
+    "滬深300": "000300.SS",
+    "滬深300指數": "000300.SS",
+    "上證指數": "000001.SS",
+    "恆生指數": "^HSI",
+    "日經225": "^N225",
+    "日經225指數": "^N225",
+    "台灣加權指數": "^TWII",
+    "標普500指數": "^GSPC",
+    "S&P 500": "^GSPC",
+    "NASDAQ指數": "^IXIC",
+    "費城半導體指數": "^SOX",
+}
 INDUSTRY_PROXIES = {
     "電子零組件業": [("台光電", "2383.TW"), ("健策", "3653.TW"), ("奇鋐", "3017.TW"), ("欣興", "3037.TW"), ("南電", "8046.TW")],
     "半導體業": [("台積電", "2330.TW"), ("聯發科", "2454.TW"), ("旺矽", "6223.TW"), ("日月光投控", "3711.TW"), ("聯詠", "3034.TW")],
@@ -97,6 +110,17 @@ def fetch_market_weekly() -> pd.DataFrame:
                     }
                 )
     return pd.DataFrame(rows)
+
+
+def fetch_benchmark_weekly(benchmark: str) -> dict | None:
+    normalized = "".join(str(benchmark).split())
+    ticker = next(
+        (symbol for name, symbol in BENCHMARK_TICKERS.items() if "".join(name.split()).lower() == normalized.lower()),
+        None,
+    )
+    if not ticker:
+        return None
+    return _stats(ticker)
 
 
 def fetch_industry_data(

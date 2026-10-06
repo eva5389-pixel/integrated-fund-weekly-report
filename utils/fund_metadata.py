@@ -5,6 +5,7 @@ import json
 import re
 import socket
 import ssl
+from datetime import date, timedelta
 from html import unescape
 from urllib.parse import parse_qs, unquote, urlencode, urljoin, urlparse, urlunparse
 
@@ -161,11 +162,19 @@ def extract_fund_metadata(html: str, source_url: str = "") -> dict[str, str]:
     )
 
     benchmark = ""
+    for heading in soup.select("h1, h2, h3, h4, h5"):
+        heading_text = _clean(heading.get_text(" ", strip=True))
+        heading_match = re.search(
+            r"基準指數\s*[-–—:：]\s*(.{2,80})$", heading_text, flags=re.IGNORECASE
+        )
+        if heading_match:
+            benchmark = _clean(heading_match.group(1))
+            break
     combined = "\n".join((text, script_text, html))
-    labelled = LABEL_PATTERN.search(combined)
+    labelled = LABEL_PATTERN.search(combined) if not benchmark else None
     if labelled:
         benchmark = _clean(labelled.group(1))
-    else:
+    elif not benchmark:
         candidates = []
         for match in INDEX_PATTERN.finditer(combined):
             value = _clean(match.group(1))
@@ -270,3 +279,140 @@ def fetch_fund_top_holdings(url: str, limit: int = 10) -> list[dict]:
             if len(holdings) >= limit:
                 return holdings
     return holdings
+
+
+def fetch_fund_metrics(url: str) -> dict:
+    """Fetch public MoneyDJ data and calculate current fund metrics.
+
+    Weekly/monthly returns use the latest NAV and the latest observation on or
+    before 7/30 calendar days earlier. Maximum drawdown uses the downloaded
+    trailing-year NAV series. Sharpe and Beta are read from MoneyDJ's published
+    performance table.
+    """
+    resolved = _resolve_moneydj_wrapper_url(unquote(url.strip()))
+    parsed = urlparse(resolved)
+    if not parsed.hostname or not parsed.hostname.lower().endswith(".moneydj.com"):
+        return {}
+    fund_id = parse_qs(parsed.query).get("a", [""])[0]
+    code_match = re.match(r"(AC[A-Z0-9]+)", fund_id, flags=re.IGNORECASE)
+    if not fund_id or not code_match:
+        return {}
+    code = code_match.group(1).upper()
+
+    end = date.today()
+    start = end - timedelta(days=400)
+    nav_url = urlunparse(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            "/w/bcd/tBCDNavList.djbcd",
+            "",
+            urlencode(
+                {
+                    "a": code,
+                    "b": "1",
+                    "c": f"{start.year}-{start.month}-{start.day}",
+                    "d": f"{end.year}-{end.month}-{end.day}",
+                }
+            ),
+            "",
+        )
+    )
+    payload, _ = _download_html(nav_url)
+    payload = re.sub(r"<!--.*?-->", "", payload).strip()
+    parts = payload.split()
+    nav_rows: list[tuple[date, float]] = []
+    if len(parts) >= 2:
+        raw_dates = parts[0].split(",")
+        raw_values = parts[1].split(",")
+        for raw_date, raw_value in zip(raw_dates, raw_values):
+            try:
+                nav_date = date(int(raw_date[:4]), int(raw_date[4:6]), int(raw_date[6:8]))
+                nav_rows.append((nav_date, float(raw_value)))
+            except (TypeError, ValueError):
+                continue
+    nav_rows.sort(key=lambda item: item[0])
+    if len(nav_rows) < 2:
+        raise ValueError("MoneyDJ 未回傳足夠的歷史淨值，基金指標未更新。")
+
+    latest_date, latest_nav = nav_rows[-1]
+
+    def return_to(days: int) -> float | None:
+        eligible = [item for item in nav_rows if item[0] <= latest_date - timedelta(days=days)]
+        if not eligible or eligible[-1][1] == 0:
+            return None
+        return (latest_nav / eligible[-1][1] - 1) * 100
+
+    peak = nav_rows[0][1]
+    max_drawdown = 0.0
+    for _, nav in nav_rows:
+        peak = max(peak, nav)
+        if peak:
+            max_drawdown = min(max_drawdown, (nav / peak - 1) * 100)
+
+    performance_url = urlunparse(
+        (parsed.scheme, parsed.netloc, "/w/wr/wr03.djhtm", "", urlencode({"a": fund_id}), "")
+    )
+    html, _ = _download_html(performance_url)
+    soup = BeautifulSoup(html, "html.parser")
+    sharpe = beta = None
+    for table in soup.select("table"):
+        headers = [_clean(th.get_text(" ", strip=True)).lower() for th in table.select("thead th")]
+        if "sharpe" not in headers or "beta" not in headers:
+            continue
+        row = table.select_one("tbody tr")
+        cells = [_clean(td.get_text(" ", strip=True)) for td in row.find_all("td")] if row else []
+        if len(cells) >= 7:
+            try:
+                sharpe = float(cells[-2])
+                beta = float(cells[-1])
+            except ValueError:
+                pass
+        break
+
+    benchmark_week = None
+    comparison_match = re.search(
+        r"['\"]BCDUrl['\"]\s*:\s*['\"]([^'\"]*BCDROIList5Applet[^'\"]*)",
+        html,
+        flags=re.IGNORECASE,
+    )
+    if comparison_match:
+        comparison_url = urljoin(performance_url, unescape(comparison_match.group(1)))
+        comparison_payload, _ = _download_html(comparison_url)
+        comparison_payload = re.sub(r"<!--.*?-->", "", comparison_payload).strip()
+        comparison_parts = comparison_payload.split()
+        if len(comparison_parts) >= 3:
+            dates = comparison_parts[0].split(",")
+            benchmark_returns = comparison_parts[2].split(",")
+            benchmark_rows: list[tuple[date, float]] = []
+            for raw_date, raw_return in zip(dates, benchmark_returns):
+                try:
+                    item_date = date(
+                        int(raw_date[:4]), int(raw_date[4:6]), int(raw_date[6:8])
+                    )
+                    benchmark_rows.append((item_date, float(raw_return)))
+                except (TypeError, ValueError):
+                    continue
+            if benchmark_rows:
+                benchmark_latest_date, benchmark_latest = benchmark_rows[-1]
+                bases = [
+                    item
+                    for item in benchmark_rows
+                    if item[0] <= benchmark_latest_date - timedelta(days=7)
+                ]
+                if bases and 100 + bases[-1][1] != 0:
+                    benchmark_week = (
+                        (100 + benchmark_latest) / (100 + bases[-1][1]) - 1
+                    ) * 100
+
+    return {
+        "fund_week": return_to(7),
+        "fund_month": return_to(30),
+        "sharpe": sharpe,
+        "beta": beta,
+        "max_drawdown": max_drawdown,
+        "benchmark_week": benchmark_week,
+        "nav_date": latest_date.isoformat(),
+        "nav": latest_nav,
+        "drawdown_period": f"{nav_rows[0][0].isoformat()}～{latest_date.isoformat()}",
+    }
